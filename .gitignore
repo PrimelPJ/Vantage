@@ -1,0 +1,22 @@
+# models and data are large; regenerate with export_onnx.py
+*.onnx
+models/*_labels.txt
+sample_data/*.jpg
+sample_data/*.jpeg
+sample_data/*.png
+benchmark_results.csv
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# ros2
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/

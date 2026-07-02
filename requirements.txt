@@ -1,0 +1,10 @@
+# Edge inference + benchmark
+numpy>=1.24
+onnxruntime>=1.16
+pillow>=9.0
+# Model export
+torch>=2.0
+torchvision>=0.15
+onnx>=1.14
+# Cloud + capture (optional)
+boto3>=1.34

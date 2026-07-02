@@ -1,0 +1,17 @@
+# Run the perception router. Mount the exported ONNX model. Cloud escalation and
+# hard-case capture are opt-in via the commented env vars.
+services:
+  router:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.robot
+    environment:
+      DEVICE_ID: robot-001
+      IMAGE_TOPIC: /camera/image_raw
+      MODEL_PATH: /models/edge_ssdlite.onnx
+      LABELS_PATH: /models/edge_ssdlite_labels.txt
+      AWS_REGION: us-west-2
+      # SAGEMAKER_ENDPOINT: vantage-detector
+      # HARD_CASE_BUCKET: vantage-hard-cases-<acct>
+    volumes:
+      - ../models:/models:ro
