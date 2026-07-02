@@ -13,7 +13,75 @@ dataset, closing the loop.
 > edge model keeps getting better.
 
 Runs fully on a laptop with no ROS and no AWS through the benchmark script, so
-you can show real numbers in an interview.
+you can see real numbers immediately.
+
+---
+
+## How it works in plain terms
+
+Think of the robot as a triage nurse. The nurse (a small, fast model running on
+the robot) looks at every patient and handles the easy, obvious cases on the
+spot. When something looks unclear, the nurse phones a specialist (a big,
+accurate model in the cloud) for a second opinion, but only for those unclear
+cases, because the specialist is slow and charges per call. And every time the
+nurse was unsure, the case gets saved into a folder so the nurse can study those
+exact cases later and need the specialist less often over time.
+
+The ideas that make this work, in everyday language:
+
+- **Edge vs cloud.** "Edge" means running on the robot itself: instant and free,
+  but the model has to be small so it is less accurate. "Cloud" means calling a
+  server: much more accurate, but every call costs money and waits on the
+  network. Neither alone is good enough, so you combine them.
+
+- **The router is the whole trick.** For each camera frame, a small decision
+  function looks at how confident the on-robot model is and decides: trust it, or
+  get a second opinion. Confident frames never pay for the cloud. That one
+  decision is where all the savings come from, and it lives in a single
+  function, `router_policy.should_escalate`.
+
+- **A budget on second opinions.** If a scene is hard for a long stretch, you do
+  not want the robot phoning the cloud hundreds of times and running up a bill.
+  A rate limit (a token bucket) caps how often it can escalate; past that, it
+  falls back to handling things on its own. The cost has a ceiling by design.
+
+- **Never make the robot wait when it cannot afford to.** If the robot is in the
+  middle of something time-critical, the router skips the cloud call entirely and
+  uses the on-robot answer, because a self-driving loop cannot freeze waiting for
+  a network round trip.
+
+- **The hard cases are the gold.** The frames the small model struggled with are
+  exactly the ones worth learning from. Saving them to S3 builds a targeted
+  training set. Retrain the small model on its own mistakes and it needs the
+  cloud less and less. That improving loop is the "flywheel."
+
+---
+
+## Follow one camera frame
+
+The life of a single frame from the robot's camera:
+
+1. The camera produces a frame. The on-robot model (SSDLite, via ONNX Runtime)
+   runs on it in a few milliseconds and returns boxes with confidence scores.
+2. The router looks at the top score. Three outcomes:
+   - **Confident** (say 0.92 on a clear box): publish the on-robot result and
+     move on. No cloud, no cost.
+   - **Uncertain** (say 0.41, an ambiguous box) and there is time and budget:
+     escalate.
+   - **Uncertain but out of budget or out of time**: keep the on-robot result
+     anyway, so the robot never stalls.
+3. On escalation, the frame is JPEG-encoded and sent to the SageMaker endpoint,
+   where a heavier model (Faster R-CNN ResNet50) returns a more accurate answer.
+   That answer is published instead.
+4. Because this frame was uncertain, a background thread uploads it to S3, keyed
+   by date and device, alongside both the edge and cloud detections. It does this
+   without slowing the perception loop.
+5. Numbers are tallied: latency, whether it escalated, running cost. Later you
+   fine-tune the small model on the saved hard frames, and next week fewer frames
+   need step 3.
+
+Most frames stop at step 2. That is why hybrid stays close to on-robot speed
+while recovering most of the cloud's accuracy on the frames that matter.
 
 ---
 
@@ -48,6 +116,16 @@ you can show real numbers in an interview.
                                     fine-tune edge model on its own hard cases
                                     -> escalation rate and cloud cost fall
 ```
+
+### The moving parts, one line each
+
+- **EdgeDetector**: the fast on-robot model. Runs on every frame, no network.
+- **Router policy**: the decision to trust the edge or get a cloud second opinion.
+- **Token bucket**: the spending cap on cloud calls.
+- **SageMaker endpoint**: the heavy, accurate model you call only when unsure.
+- **HardCaseCapture**: saves uncertain frames to S3 for later retraining.
+- **Metrics**: tracks latency, escalation rate, and cost so the tradeoff is visible.
+- **benchmark.py**: runs the whole comparison on a laptop, no robot or AWS needed.
 
 See `docs/architecture.md` for the routing policy in detail and the data
 flywheel.
@@ -177,25 +255,6 @@ flywheel.
 **Honest baselines.** The edge detector runs on CPU by default, which is what a
 robot without a GPU actually has. The cloud stand-in adds synthetic network
 latency so laptop benchmarks are not misleadingly fast.
-
----
-
-## Talking points for interviews
-
-- Why not run the big model in the cloud for everything? (latency, cost, and a
-  network dependency in the perception loop; quantify it with the benchmark)
-- Why not run everything on the edge? (accuracy on hard frames; show the
-  agreement gap between edge-only and cloud)
-- How does the router decide? (confidence band, latency gate, token-bucket
-  budget, walk through `should_escalate`)
-- How do you stop cloud costs from exploding on a hard scene? (rate limit,
-  graceful degradation to edge)
-- How does the system improve over time? (hard-case capture to S3, fine-tune
-  on captured data, escalation rate falls)
-- How does a robot call SageMaker without static credentials? (IoT Core
-  credentials provider: X.509 cert exchanged for temporary IAM role creds)
-- Where would you put this on real hardware? (ONNX Runtime with a TensorRT
-  provider on a Jetson; the code already isolates the provider choice)
 
 ---
 
